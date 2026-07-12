@@ -3,10 +3,12 @@ from sqlalchemy.orm import Session
 from datetime import datetime
 import json
 import re
+import logging
 from ..database import SessionLocal
 from .. import models, schemas, crud
 from ..core.groq_client import get_llm
 
+logger = logging.getLogger(__name__)
 llm = get_llm()
 
 def get_db():
@@ -18,11 +20,77 @@ def get_db():
 
 
 @tool
+def search_hcp(query: str) -> str:
+    """
+    Search for HCPs by name. Returns a JSON array of matching HCPs.
+    Input: query - string containing HCP name to search for.
+    """
+    logger.info(f"🔍 search_hcp called with query: {query}")
+    try:
+        db = next(get_db())
+        hcps = db.query(models.HCP).filter(models.HCP.name.ilike(f"%{query}%")).limit(10).all()
+        
+        result = []
+        for hcp in hcps:
+            result.append({
+                'id': hcp.id,
+                'name': hcp.name,
+                'specialty': hcp.specialty,
+                'hospital': hcp.hospital,
+                'email': hcp.email,
+                'phone': hcp.phone
+            })
+        
+        logger.info(f"✅ search_hcp found {len(result)} results")
+        return json.dumps(result)
+    except Exception as e:
+        logger.error(f"❌ search_hcp error: {str(e)}")
+        return json.dumps({'error': str(e), 'results': []})
+
+
+@tool
+def get_interaction_history(hcp_id: int) -> str:
+    """
+    Get all interactions for a specific HCP by their numeric ID.
+    Input: hcp_id - integer ID of the HCP.
+    Returns JSON array of interactions.
+    """
+    logger.info(f"📋 get_interaction_history called with hcp_id: {hcp_id}")
+    try:
+        db = next(get_db())
+        
+        # Verify HCP exists
+        hcp = db.query(models.HCP).filter(models.HCP.id == hcp_id).first()
+        if not hcp:
+            return json.dumps({'error': f'HCP with ID {hcp_id} not found', 'interactions': []})
+        
+        interactions = db.query(models.Interaction).filter(
+            models.Interaction.hcp_id == hcp_id
+        ).order_by(models.Interaction.date.desc()).limit(10).all()
+        
+        result = []
+        for interaction in interactions:
+            result.append({
+                'id': interaction.id,
+                'date': interaction.date.isoformat() if interaction.date else None,
+                'type': interaction.interaction_type,
+                'topics': interaction.topics_discussed,
+                'sentiment': interaction.sentiment,
+                'outcome': interaction.outcome,
+                'follow_up_actions': interaction.follow_up_actions
+            })
+        
+        logger.info(f"✅ get_interaction_history found {len(result)} interactions")
+        return json.dumps(result)
+    except Exception as e:
+        logger.error(f"❌ get_interaction_history error: {str(e)}")
+        return json.dumps({'error': str(e), 'interactions': []})
+
+
+@tool
 def extract_interaction_details(text: str) -> str:
-    """
-    Extract structured interaction details from unstructured text.
-    Returns structured JSON with extracted fields.
-    """
+    """Extract structured interaction details from unstructured text."""
+    logger.info(f"📝 extract_interaction_details called with text length: {len(text)}")
     try:
         current_date = datetime.now().strftime("%Y-%m-%d")
         current_time = datetime.now().strftime("%H:%M")
@@ -35,7 +103,7 @@ def extract_interaction_details(text: str) -> str:
         
         Text: {text}
         
-        Return ONLY valid JSON with these exact fields (use current date/time if not mentioned):
+        Return ONLY valid JSON with these exact fields:
         - hcp_name: string (extract doctor name)
         - interaction_type: "Meeting" | "Call" | "Email" | "Other"
         - date: YYYY-MM-DD format
@@ -49,20 +117,6 @@ def extract_interaction_details(text: str) -> str:
         - samples: array of {{"product_name": string, "quantity": number}}
         
         IMPORTANT: Return ONLY valid JSON. No extra text.
-        Example output format:
-        {{
-            "hcp_name": "Dr. Sharma",
-            "interaction_type": "Meeting",
-            "date": "{current_date}",
-            "time": "{current_time}",
-            "attendees": "",
-            "topics_discussed": "Prodo-X efficacy and safety",
-            "sentiment": "Positive",
-            "outcome": "Interest shown",
-            "follow_up_actions": "Schedule follow-up meeting",
-            "materials": [{{"name": "Product Brochure", "quantity": 1}}],
-            "samples": [{{"product_name": "Prodo-X Sample", "quantity": 1}}]
-        }}
         """
         
         response = llm.invoke(prompt)
@@ -73,7 +127,6 @@ def extract_interaction_details(text: str) -> str:
             json_str = json_match.group()
             try:
                 result = json.loads(json_str)
-                # Ensure all fields exist
                 result.setdefault("date", current_date)
                 result.setdefault("time", current_time)
                 result.setdefault("sentiment", "Neutral")
@@ -86,56 +139,33 @@ def extract_interaction_details(text: str) -> str:
             except:
                 pass
         
-        # Fallback
         return json.dumps({
-            "hcp_name": "Dr. Sharma",
+            "hcp_name": "Dr. Unknown",
             "interaction_type": "Meeting",
             "date": current_date,
             "time": current_time,
             "attendees": "",
             "topics_discussed": text[:100],
-            "sentiment": "Positive",
-            "outcome": "Discussed product",
-            "follow_up_actions": "Follow up in 2 weeks",
-            "materials": [],
-            "samples": []
-        })
-    
-    except Exception as e:
-        return json.dumps({
-            "error": str(e),
-            "hcp_name": "Dr. Sharma",
-            "interaction_type": "Meeting",
-            "date": datetime.now().strftime("%Y-%m-%d"),
-            "time": datetime.now().strftime("%H:%M"),
-            "topics_discussed": text[:100] if text else "",
             "sentiment": "Neutral",
+            "outcome": "",
+            "follow_up_actions": "",
             "materials": [],
             "samples": []
         })
+    except Exception as e:
+        logger.error(f"❌ extract_interaction_details error: {str(e)}")
+        return json.dumps({"error": str(e)})
 
 
 @tool
 def log_interaction(data_json: str) -> str:
-    """
-    Log a new HCP interaction with structured data.
-    Expects a JSON string with fields: hcp_name, interaction_type, date, time, etc.
-    """
+    """Log a new HCP interaction with structured data."""
+    logger.info(f"📝 log_interaction called with data length: {len(data_json)}")
     try:
         data = json.loads(data_json)
         
         if "hcp_name" not in data or not data["hcp_name"]:
             return "Error: HCP name is required"
-        
-        # Set defaults
-        if not data.get("interaction_type"):
-            data["interaction_type"] = "Meeting"
-        if not data.get("sentiment"):
-            data["sentiment"] = "Neutral"
-        if not data.get("materials"):
-            data["materials"] = []
-        if not data.get("samples"):
-            data["samples"] = []
         
         # Parse date
         date_str = data.get("date", "")
@@ -143,11 +173,7 @@ def log_interaction(data_json: str) -> str:
             if date_str and date_str.lower() in ["today", "now"]:
                 date_obj = datetime.now()
             elif date_str:
-                # Try to parse
-                try:
-                    date_obj = datetime.strptime(date_str, "%Y-%m-%d")
-                except:
-                    date_obj = datetime.now()
+                date_obj = datetime.strptime(date_str, "%Y-%m-%d")
             else:
                 date_obj = datetime.now()
         except:
@@ -159,15 +185,10 @@ def log_interaction(data_json: str) -> str:
             if time_str and time_str.lower() in ["now", "current"]:
                 time_obj = datetime.now()
             elif time_str:
-                try:
-                    # Try HH:MM format
+                if "PM" in time_str or "AM" in time_str:
+                    time_obj = datetime.strptime(time_str.replace(" ", ""), "%I%p")
+                else:
                     time_obj = datetime.strptime(time_str, "%H:%M")
-                except:
-                    # Try with AM/PM
-                    try:
-                        time_obj = datetime.strptime(time_str.replace(" ", ""), "%I%p")
-                    except:
-                        time_obj = datetime.now()
             else:
                 time_obj = datetime.now()
         except:
@@ -182,6 +203,9 @@ def log_interaction(data_json: str) -> str:
             db.add(hcp)
             db.commit()
             db.refresh(hcp)
+            logger.info(f"✅ Created new HCP: {hcp.name} (ID: {hcp.id})")
+        else:
+            logger.info(f"✅ Found existing HCP: {hcp.name} (ID: {hcp.id})")
         
         # Create interaction
         interaction_data = {
@@ -224,17 +248,16 @@ def log_interaction(data_json: str) -> str:
         
         db.commit()
         
-        return f"Interaction logged successfully with ID {result.id} for HCP: {hcp.name}. Date: {date_obj.strftime('%Y-%m-%d')}, Time: {time_obj.strftime('%H:%M')}"
-    
+        return f"Interaction logged successfully with ID {result.id} for HCP: {hcp.name} (ID: {hcp.id}). Date: {date_obj.strftime('%Y-%m-%d')}, Time: {time_obj.strftime('%H:%M')}"
     except Exception as e:
+        logger.error(f"❌ log_interaction error: {str(e)}")
         return f"Error logging interaction: {str(e)}"
 
 
 @tool
 def edit_interaction(interaction_id: int, update_json: str) -> str:
-    """
-    Edit an existing interaction.
-    """
+    """Edit an existing interaction. Input: interaction_id (int) and update_json (string)."""
+    logger.info(f"✏️ edit_interaction called with interaction_id: {interaction_id}")
     try:
         update_data = json.loads(update_json)
         db = next(get_db())
@@ -247,11 +270,12 @@ def edit_interaction(interaction_id: int, update_json: str) -> str:
         result = crud.update_interaction(db, interaction_id, update_schema)
         
         if result:
+            logger.info(f"✅ Interaction {interaction_id} updated")
             return f"Interaction {interaction_id} updated successfully."
         else:
             return f"Failed to update interaction {interaction_id}."
-    
     except Exception as e:
+        logger.error(f"❌ edit_interaction error: {str(e)}")
         return f"Error editing interaction: {str(e)}"
 
 
@@ -259,7 +283,9 @@ def edit_interaction(interaction_id: int, update_json: str) -> str:
 def summarize_interaction(interaction_id: int) -> str:
     """
     Generate a professional summary of an existing interaction.
+    Input: interaction_id - integer ID of the interaction to summarize.
     """
+    logger.info(f"📋 summarize_interaction called with interaction_id: {interaction_id}")
     try:
         db = next(get_db())
         interaction = db.query(models.Interaction).filter(models.Interaction.id == interaction_id).first()
@@ -284,9 +310,10 @@ def summarize_interaction(interaction_id: int) -> str:
         """
         
         response = llm.invoke(prompt)
+        logger.info(f"✅ Summary generated for interaction {interaction_id}")
         return response.content
-    
     except Exception as e:
+        logger.error(f"❌ summarize_interaction error: {str(e)}")
         return f"Error generating summary: {str(e)}"
 
 
@@ -294,7 +321,9 @@ def summarize_interaction(interaction_id: int) -> str:
 def generate_followup_recommendations(interaction_id: int) -> str:
     """
     Generate follow-up recommendations based on interaction context.
+    Input: interaction_id - integer ID of the interaction to analyze.
     """
+    logger.info(f"📋 generate_followup_recommendations called with interaction_id: {interaction_id}")
     try:
         db = next(get_db())
         interaction = db.query(models.Interaction).filter(models.Interaction.id == interaction_id).first()
@@ -320,6 +349,7 @@ def generate_followup_recommendations(interaction_id: int) -> str:
         response = llm.invoke(prompt)
         content = response.content
         
+        # Parse recommendations
         lines = content.split('\n')
         recommendations = []
         for line in lines:
@@ -336,54 +366,8 @@ def generate_followup_recommendations(interaction_id: int) -> str:
                 "Follow up on outcome"
             ]
         
+        logger.info(f"✅ Generated {len(recommendations)} follow-up recommendations")
         return "\n".join([f"• {rec}" for rec in recommendations])
-    
     except Exception as e:
-        return f"Error: {str(e)}"
-
-
-@tool
-def search_hcp(query: str) -> str:
-    """Search for HCPs by name."""
-    try:
-        db = next(get_db())
-        hcps = db.query(models.HCP).filter(models.HCP.name.ilike(f"%{query}%")).limit(10).all()
-        
-        result = []
-        for hcp in hcps:
-            result.append({
-                'id': hcp.id,
-                'name': hcp.name,
-                'specialty': hcp.specialty,
-                'hospital': hcp.hospital
-            })
-        
-        return json.dumps(result)
-    
-    except Exception as e:
-        return json.dumps({'error': str(e)})
-
-
-@tool
-def get_interaction_history(hcp_id: int) -> str:
-    """Get interaction history for an HCP."""
-    try:
-        db = next(get_db())
-        interactions = db.query(models.Interaction).filter(
-            models.Interaction.hcp_id == hcp_id
-        ).order_by(models.Interaction.date.desc()).limit(10).all()
-        
-        result = []
-        for interaction in interactions:
-            result.append({
-                'id': interaction.id,
-                'date': interaction.date.isoformat() if interaction.date else None,
-                'type': interaction.interaction_type,
-                'topics': interaction.topics_discussed,
-                'sentiment': interaction.sentiment
-            })
-        
-        return json.dumps(result)
-    
-    except Exception as e:
-        return json.dumps({'error': str(e)})
+        logger.error(f"❌ generate_followup_recommendations error: {str(e)}")
+        return f"Error generating recommendations: {str(e)}"

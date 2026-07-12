@@ -27,19 +27,18 @@ import DeleteIcon from '@mui/icons-material/Delete';
 import MicIcon from '@mui/icons-material/Mic';
 import StopIcon from '@mui/icons-material/Stop';
 import AutoAwesomeIcon from '@mui/icons-material/AutoAwesome';
-import SearchIcon from '@mui/icons-material/Search';
-import { createInteraction, updateInteraction } from '../redux/slices/interactionSlice';
+import { createInteraction, updateInteraction, clearSuccessMessage } from '../redux/slices/interactionSlice';
 
 const FormPanel = () => {
     const dispatch = useDispatch();
     const { extractedData, suggestedFollowups } = useSelector((state) => state.chat);
-    const { current, loading, error } = useSelector((state) => state.interaction);
+    const { current, loading, error, successMessage } = useSelector((state) => state.interaction);
 
     const [formData, setFormData] = useState({
         hcp_name: '',
         date: new Date().toISOString().split('T')[0],
         interaction_type: 'Meeting',
-        time: new Date().toTimeString().slice(0, 5),  // ✅ Auto set current time (HH:MM format)
+        time: new Date().toTimeString().slice(0, 5),
         attendees: '',
         topics_discussed: '',
         materials: [{ name: '', quantity: 1 }],
@@ -48,6 +47,11 @@ const FormPanel = () => {
         outcome: '',
         follow_up_actions: '',
     });
+
+    // Snackbar states
+    const [snackbarOpen, setSnackbarOpen] = useState(false);
+    const [snackbarMessage, setSnackbarMessage] = useState('');
+    const [snackbarSeverity, setSnackbarSeverity] = useState('success');
 
     // Voice recording states
     const [isRecording, setIsRecording] = useState(false);
@@ -60,6 +64,32 @@ const FormPanel = () => {
     const audioChunksRef = useRef([]);
     const streamRef = useRef(null);
     const recognitionRef = useRef(null);
+
+    // ✅ Snackbar effect for success message
+    useEffect(() => {
+        if (successMessage) {
+            setSnackbarMessage(successMessage);
+            setSnackbarSeverity('success');
+            setSnackbarOpen(true);
+            setTimeout(() => {
+                dispatch(clearSuccessMessage());
+            }, 5000);
+        }
+    }, [successMessage, dispatch]);
+
+    // ✅ Snackbar effect for error message
+    useEffect(() => {
+        if (error) {
+            setSnackbarMessage(`❌ ${error}`);
+            setSnackbarSeverity('error');
+            setSnackbarOpen(true);
+        }
+    }, [error]);
+
+    const handleSnackbarClose = (event, reason) => {
+        if (reason === 'clickaway') return;
+        setSnackbarOpen(false);
+    };
 
     useEffect(() => {
         if (extractedData) {
@@ -889,7 +919,24 @@ const FormPanel = () => {
                 </Grid>
             </Grid>
 
-            {/* Success Snackbar */}
+            {/* ✅ Success/Error Snackbar */}
+            <Snackbar
+                open={snackbarOpen}
+                autoHideDuration={4000}
+                onClose={handleSnackbarClose}
+                anchorOrigin={{ vertical: 'bottom', horizontal: 'center' }}
+            >
+                <Alert
+                    onClose={handleSnackbarClose}
+                    severity={snackbarSeverity}
+                    variant="filled"
+                    sx={{ width: '100%', fontSize: '0.9rem' }}
+                >
+                    {snackbarMessage}
+                </Alert>
+            </Snackbar>
+
+            {/* Voice Note Success Snackbar */}
             <Snackbar
                 open={showSuccess}
                 autoHideDuration={4000}

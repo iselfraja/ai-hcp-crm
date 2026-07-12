@@ -23,3 +23,8 @@ class AgentState(TypedDict):
     clarification_question: Optional[str]
     final_response: str
     errors: List[str]
+    
+    # ✅ New flags for multi-step workflows
+    needs_history: bool
+    needs_summary: bool
+    needs_followup: bool

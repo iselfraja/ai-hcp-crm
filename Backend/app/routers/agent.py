@@ -2,7 +2,7 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel
 from typing import Optional, Dict, Any, List
 from sqlalchemy.orm import Session
-from langchain_core.messages import HumanMessage, AIMessage  # ✅ Added import
+from langchain_core.messages import HumanMessage
 from ..database import get_db
 from ..agent.graph import agent_graph
 from ..agent.state import AgentState
@@ -45,7 +45,7 @@ async def agent_chat(
                 detail="Agent graph not initialized"
             )
         
-        # ✅ Prepare initial state with proper HumanMessage
+        # Prepare initial state
         state: AgentState = {
             "messages": [HumanMessage(content=request.message)],
             "user_query": request.message,
@@ -64,7 +64,10 @@ async def agent_chat(
             "needs_clarification": False,
             "clarification_question": None,
             "final_response": "",
-            "errors": []
+            "errors": [],
+            "needs_history": False,
+            "needs_summary": False,
+            "needs_followup": False
         }
         
         # Run the agent graph
@@ -72,14 +75,12 @@ async def agent_chat(
         result = agent_graph.invoke(state)
         logger.info("✅ Agent graph execution completed")
         
-        # ✅ Extract final response safely
+        # Extract final response
         final_response = result.get("final_response", "No response from AI")
         
-        # ✅ If final_response is an AIMessage, extract content
-        if isinstance(final_response, AIMessage):
-            final_response = final_response.content if final_response.content else "No response from AI"
-        elif isinstance(final_response, dict):
-            final_response = final_response.get("content", "No response from AI")
+        # If final_response is an AIMessage, extract content
+        if hasattr(final_response, 'content'):
+            final_response = final_response.content
         
         logger.info(f"✅ Agent response: {final_response[:100] if final_response else 'None'}...")
         
